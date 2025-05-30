@@ -8,7 +8,7 @@ class Settings:
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")  # For web search
     SERP_API_KEY = os.getenv("SERP_API_KEY")     # Alternative search
-    
+
     # App Settings
     APP_NAME = "Touch AI Research Assistant"
     DEBUG = os.getenv("DEBUG", "False").lower() == "true"

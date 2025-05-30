@@ -5,6 +5,7 @@ from bs4 import BeautifulSoup
 import re
 from urllib.parse import urljoin, urlparse
 from config import settings
+import os
 
 class WebSearchTool(BaseTool):
     name: str = "web_search"  # Added type annotation
@@ -28,13 +29,15 @@ class WebSearchTool(BaseTool):
         """Search using Tavily API"""
         from tavily import TavilyClient
         
+        print("Attempting Tavily search...")
+        print(f"API Key length: {len(settings.TAVILY_API_KEY) if settings.TAVILY_API_KEY else 0}")
+        
         client = TavilyClient(api_key=settings.TAVILY_API_KEY)
         results = client.search(
             query=query,
-            search_depth="advanced",
-            max_results=settings.MAX_SEARCH_RESULTS
         )
         
+        print(results)
         return [
             {
                 "title": result.get("title", ""),

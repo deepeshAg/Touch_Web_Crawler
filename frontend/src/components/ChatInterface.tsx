@@ -2,8 +2,15 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, Search, Globe, Loader, CheckCircle } from 'lucide-react';
-import axios from 'axios';
+import { Search, Sparkles, Loader } from 'lucide-react';
+import Markdown from 'react-markdown';
+
+// Import components (in a real project, these would be separate files)
+import Header from './Header';
+import ResearchSteps from './ResearchSteps';
+import Sources from './Sources';
+import MessageContent from './Content';
+import InputSection from './InputSection';
 
 interface Source {
   title: string;
@@ -29,16 +36,141 @@ interface Message {
   confidence_score?: number;
   processing_time?: number;
   timestamp: Date;
+  isStreaming?: boolean;
+  showSteps?: boolean;
+  showSources?: boolean;
+  showContent?: boolean;
+  researchComplete?: boolean;
+}
+
+interface StreamEvent {
+  type: 'research_step' | 'content_chunk' | 'sources' | 'complete' | 'error' | 'start_synthesis';
+  data: any;
 }
 
 const API_BASE = 'http://localhost:8000';
+
+// Welcome Component
+function WelcomeScreen({ onExampleClick }: { onExampleClick: (text: string) => void }) {
+  const examples = [
+    {
+      title: "AI & Technology",
+      query: "Compare the latest AI models and their capabilities",
+      icon: "🤖"
+    },
+    {
+      title: "Science & Research",
+      query: "Latest breakthroughs in quantum computing",
+      icon: "🔬"
+    },
+    {
+      title: "Business & Markets",
+      query: "Analyze the current state of renewable energy markets",
+      icon: "📊"
+    },
+    {
+      title: "Health & Medicine",
+      query: "Recent developments in cancer treatment research",
+      icon: "🏥"
+    }
+  ];
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.6 }}
+      className="flex flex-col items-center justify-center min-h-[60vh] text-center px-6"
+    >
+      <div className="relative mb-8">
+        <div className="w-20 h-20 bg-gradient-to-br from-blue-500 to-purple-600 rounded-3xl flex items-center justify-center shadow-2xl">
+          <Search className="w-12 h-12 text-white" />
+        </div>
+        <div className="absolute -inset-4 bg-gradient-to-br from-blue-500/20 to-purple-600/20 rounded-3xl blur-xl opacity-75"></div>
+        <motion.div
+          animate={{ rotate: 360 }}
+          transition={{ duration: 20, repeat: Infinity, ease: "linear" }}
+          className="absolute -inset-6 border border-dashed border-blue-500/30 rounded-3xl"
+        ></motion.div>
+      </div>
+
+      <motion.div
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.2, duration: 0.6 }}
+      >
+        <h1 className="text-3xl md:text-4xl font-bold text-white mb-4">
+          Welcome to{' '}
+          <span className="bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
+            Touch
+          </span>
+        </h1>
+      </motion.div>
+
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.4, duration: 0.6 }}
+        className="grid grid-cols-1 mt-4 md:grid-cols-2 gap-4 max-w-4xl w-full"
+      >
+        {examples.map((example, i) => (
+          <motion.button
+            key={i}
+            whileHover={{ scale: 1.02, y: -2 }}
+            whileTap={{ scale: 0.98 }}
+            onClick={() => onExampleClick(example.query)}
+            className="group p-6 bg-gray-800/50 backdrop-blur-xl border border-gray-700/50 rounded-2xl text-left hover:border-gray-600/50 transition-all duration-300"
+          >
+            <div className="flex items-start gap-4">
+              <div className="text-2xl">{example.icon}</div>
+              <div>
+                <h3 className="font-semibold text-white mb-2 group-hover:text-blue-400 transition-colors">
+                  {example.title}
+                </h3>
+                <p className="text-sm text-gray-400 leading-relaxed">
+                  {example.query}
+                </p>
+              </div>
+            </div>
+          </motion.button>
+        ))}
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// Current Step Indicator Component
+function CurrentStepIndicator({ step }: { step: string }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -20 }}
+      className="flex justify-start mb-6"
+    >
+      <div className="bg-blue-500/20 backdrop-blur-xl border border-blue-500/30 rounded-2xl px-6 py-4">
+        <div className="flex items-center gap-3">
+          <div className="relative">
+            <Loader className="w-4 h-4 animate-spin text-blue-400" />
+            <div className="absolute inset-0 w-4 h-4 animate-ping text-blue-400 opacity-30">
+              <Loader className="w-4 h-4" />
+            </div>
+          </div>
+          <span className="text-sm text-blue-200">{step}</span>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
 
 export default function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [currentStep, setCurrentStep] = useState('');
+  const [abortController, setAbortController] = useState<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -48,8 +180,20 @@ export default function ChatInterface() {
     scrollToBottom();
   }, [messages]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const stopStreaming = () => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+    if (abortController) {
+      abortController.abort();
+      setAbortController(null);
+    }
+    setIsLoading(false);
+    setCurrentStep('');
+  };
+
+  const handleSubmit = () => {
     if (!input.trim() || isLoading) return;
 
     const userMessage: Message = {
@@ -60,261 +204,269 @@ export default function ChatInterface() {
     };
 
     setMessages(prev => [...prev, userMessage]);
+    const query = input;
     setInput('');
     setIsLoading(true);
-    setCurrentStep('Starting research...');
+    setCurrentStep('Initializing research...');
+
+    // Create assistant message placeholder
+    const assistantId = (Date.now() + 1).toString();
+    const assistantMessage: Message = {
+      id: assistantId,
+      type: 'assistant',
+      content: '',
+      sources: [],
+      research_steps: [],
+      timestamp: new Date(),
+      isStreaming: true,
+      showSteps: false,
+      showSources: false,
+      showContent: false,
+      researchComplete: false
+    };
+
+    setMessages(prev => [...prev, assistantMessage]);
+
+    // Create abort controller for this request
+    const controller = new AbortController();
+    setAbortController(controller);
 
     try {
-      const response = await axios.post(`${API_BASE}/api/research`, {
-        query: input
-      });
+      // Use EventSource for streaming
+      const eventSource = new EventSource(
+        `${API_BASE}/api/research/stream?query=${encodeURIComponent(query)}`,
+        { }
+      );
+      
+      eventSourceRef.current = eventSource;
 
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        type: 'assistant',
-        content: response.data.answer,
-        sources: response.data.sources,
-        research_steps: response.data.research_steps,
-        confidence_score: response.data.confidence_score,
-        processing_time: response.data.processing_time,
-        timestamp: new Date()
+      eventSource.onopen = () => {
+        console.log('Stream opened');
       };
 
-      setMessages(prev => [...prev, assistantMessage]);
+      eventSource.onmessage = (event) => {
+        try {
+          const streamEvent: StreamEvent = JSON.parse(event.data);
+          
+          setMessages(prev => prev.map(msg => {
+            if (msg.id === assistantId) {
+              const updatedMsg = { ...msg };
+              
+              switch (streamEvent.type) {
+                case 'research_step':
+                  setCurrentStep(streamEvent.data.description);
+                  updatedMsg.research_steps = [
+                    ...(updatedMsg.research_steps || []),
+                    streamEvent.data
+                  ];
+                  updatedMsg.showSteps = true;
+                  break;
+                
+                case 'sources':
+                  updatedMsg.sources = streamEvent.data.sources;
+                  updatedMsg.showSources = true;
+                  updatedMsg.researchComplete = true;
+                  break;
+                
+                case 'start_synthesis':
+                  if (updatedMsg.researchComplete) {
+                    updatedMsg.showContent = true;
+                    setCurrentStep('Generating comprehensive answer...');
+                  }
+                  break;
+                
+                case 'content_chunk':
+                  if (updatedMsg.researchComplete) {
+                    updatedMsg.content += streamEvent.data.chunk;
+                    updatedMsg.showContent = true;
+                  }
+                  break;
+                
+                case 'complete':
+                  updatedMsg.isStreaming = false;
+                  updatedMsg.confidence_score = streamEvent.data.confidence_score;
+                  updatedMsg.processing_time = streamEvent.data.processing_time;
+                  updatedMsg.showContent = true;
+                  setIsLoading(false);
+                  setCurrentStep('');
+                  eventSource.close();
+                  eventSourceRef.current = null;
+                  setAbortController(null);
+                  break;
+                
+                case 'error':
+                  updatedMsg.content = streamEvent.data.message || 'An error occurred during research';
+                  updatedMsg.isStreaming = false;
+                  updatedMsg.showContent = true;
+                  setIsLoading(false);
+                  setCurrentStep('');
+                  eventSource.close();
+                  eventSourceRef.current = null;
+                  setAbortController(null);
+                  break;
+              }
+              
+              return updatedMsg;
+            }
+            return msg;
+          }));
+        } catch (error) {
+          console.error('Error parsing stream event:', error);
+        }
+      };
+
+      eventSource.onerror = (error) => {
+        console.error('EventSource error:', error);
+        setMessages(prev => prev.map(msg => {
+          if (msg.id === assistantId && msg.isStreaming) {
+            return {
+              ...msg,
+              content: msg.content || 'Sorry, I encountered an error while researching your query. Please try again.',
+              isStreaming: false,
+              showContent: true
+            };
+          }
+          return msg;
+        }));
+        setIsLoading(false);
+        setCurrentStep('');
+        eventSource.close();
+        eventSourceRef.current = null;
+        setAbortController(null);
+      };
+
     } catch (error) {
-      const errorMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        type: 'assistant',
-        content: 'Sorry, I encountered an error while researching your query. Please try again.',
-        timestamp: new Date()
-      };
-      setMessages(prev => [...prev, errorMessage]);
-    } finally {
+      console.error('Stream setup error:', error);
+      setMessages(prev => prev.map(msg => {
+        if (msg.id === assistantId) {
+          return {
+            ...msg,
+            content: 'Sorry, I encountered an error while researching your query. Please try again.',
+            isStreaming: false,
+            showContent: true
+          };
+        }
+        return msg;
+      }));
       setIsLoading(false);
       setCurrentStep('');
+      setAbortController(null);
     }
   };
 
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSubmit();
+    }
+  };
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+      }
+      if (abortController) {
+        abortController.abort();
+      }
+    };
+  }, []);
+
   return (
-    <div className="flex flex-col h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50">
+    <div className="min-h-screen bg-gray-950 text-white">
+      {/* Gradient Background */}
+      <div className="fixed inset-0 bg-gradient-to-br from-gray-900 via-gray-950 to-black"></div>
+      <div className="fixed inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(59,130,246,0.1),transparent_50%)]"></div>
+      <div className="fixed inset-0 bg-[radial-gradient(circle_at_70%_80%,rgba(147,51,234,0.1),transparent_50%)]"></div>
+      
       {/* Header */}
-      <header className="bg-white/80 backdrop-blur-md border-b border-gray-200 px-6 py-4">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-gradient-to-r from-indigo-500 to-purple-600 rounded-xl flex items-center justify-center">
-            <Search className="w-5 h-5 text-white" />
-          </div>
-          <div>
-            <h1 className="text-xl font-semibold text-gray-900">Touch</h1>
-            <p className="text-sm text-gray-500">AI Research Assistant</p>
-          </div>
-          <div className="ml-auto flex items-center gap-2 text-sm text-gray-500">
-            <Globe className="w-4 h-4" />
-            <span>Web-enabled</span>
-          </div>
-        </div>
-      </header>
+      <Header isLoading={isLoading} onStop={stopStreaming} />
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-6 space-y-6">
-        <AnimatePresence>
-          {messages.length === 0 && (
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="text-center py-16"
-            >
-              <div className="w-16 h-16 bg-gradient-to-r from-indigo-500 to-purple-600 rounded-2xl mx-auto mb-6 flex items-center justify-center">
-                <Search className="w-8 h-8 text-white" />
-              </div>
-              <h2 className="text-2xl font-semibold text-gray-900 mb-2">
-                Welcome to Touch
-              </h2>
-              <p className="text-gray-600 mb-8 max-w-md mx-auto">
-                I'm your AI research assistant. Ask me anything and I'll search the web, 
-                analyze multiple sources, and provide you with comprehensive, cited answers.
-              </p>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-2xl mx-auto">
-                {[
-                  "Compare the latest electric vehicle models",
-                  "What are the current trends in renewable energy?",
-                  "Analyze the impact of AI on employment",
-                  "Research sustainable fashion brands"
-                ].map((example, i) => (
-                  <button
-                    key={i}
-                    onClick={() => setInput(example)}
-                    className="p-4 text-left bg-white rounded-xl border border-gray-200 hover:border-indigo-300 hover:shadow-md transition-all duration-200"
+      {/* Main Content */}
+      <div className="relative z-10 pt-24 pb-32">
+        <div className="max-w-5xl mx-auto px-6">
+          <AnimatePresence mode="wait">
+            {messages.length === 0 ? (
+              <WelcomeScreen onExampleClick={setInput} />
+            ) : (
+              <div className="space-y-8">
+                {messages.map((message) => (
+                  <motion.div
+                    key={message.id}
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.4 }}
+                    className={`flex ${message.type === 'user' ? 'justify-end' : 'justify-start'}`}
                   >
-                    <p className="text-sm text-gray-700">{example}</p>
-                  </button>
+                    <div className={`max-w-4xl w-full ${message.type === 'user' ? 'ml-8' : 'mr-8'}`}>
+                      
+                      {/* User Message */}
+                      {message.type === 'user' && (
+                        <motion.div
+                          initial={{ opacity: 0, x: 20 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          className="ml-auto max-w-2xl"
+                        >
+                          <div className="bg-gradient-to-r from-blue-500 to-purple-600 rounded-2xl px-6 py-4 shadow-2xl">
+                            <p className="text-white leading-relaxed whitespace-pre-wrap">
+                              {message.content}
+                            </p>
+                          </div>
+                        </motion.div>
+                      )}
+
+                      {/* Assistant Response Components */}
+                      {message.type === 'assistant' && (
+                        <div className="space-y-6">
+                          {/* Research Steps */}
+                          <ResearchSteps 
+                            steps={message.research_steps || []} 
+                            isVisible={message.showSteps || false} 
+                          />
+
+                          {/* Sources */}
+                          <Sources 
+                            sources={message.sources || []} 
+                            isVisible={message.showSources || false} 
+                          />
+
+                          {/* Answer Content */}
+                          <MessageContent
+                            content={message.content}
+                            isStreaming={message.isStreaming || false}
+                            isVisible={message.showContent || false}
+                            confidence_score={message.confidence_score}
+                            processing_time={message.processing_time}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </motion.div>
                 ))}
-              </div>
-            </motion.div>
-          )}
 
-          {messages.map((message) => (
-            <motion.div
-              key={message.id}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className={`flex ${message.type === 'user' ? 'justify-end' : 'justify-start'}`}
-            >
-              <div className={`max-w-4xl ${message.type === 'user' ? 'ml-8' : 'mr-8'}`}>
-                <div
-                  className={`rounded-2xl px-6 py-4 ${
-                    message.type === 'user'
-                      ? 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white'
-                      : 'bg-white border border-gray-200 shadow-sm'
-                  }`}
-                >
-                  <p className="text-sm leading-relaxed whitespace-pre-wrap">
-                    {message.content}
-                  </p>
-                  
-                  {message.confidence_score && (
-                    <div className="mt-3 flex items-center gap-2 text-xs opacity-75">
-                      <CheckCircle className="w-3 h-3" />
-                      <span>Confidence: {Math.round(message.confidence_score * 100)}%</span>
-                      <span>•</span>
-                      <span>{message.processing_time?.toFixed(1)}s</span>
-                    </div>
+                {/* Current Step Indicator */}
+                <AnimatePresence>
+                  {isLoading && currentStep && (
+                    <CurrentStepIndicator step={currentStep} />
                   )}
-                </div>
-
-                {/* Research Steps */}
-                {message.research_steps && message.research_steps.length > 0 && (
-                  <motion.div
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: 'auto' }}
-                    className="mt-4 bg-blue-50 rounded-xl p-4"
-                  >
-                    <h4 className="text-sm font-medium text-blue-900 mb-3">Research Process</h4>
-                    <div className="space-y-2">
-                      {message.research_steps.map((step, i) => (
-                        <div key={i} className="flex items-start gap-3">
-                          <div className="w-6 h-6 bg-blue-200 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
-                            <span className="text-xs font-medium text-blue-800">{step.step_number}</span>
-                          </div>
-                          <div>
-                            <p className="text-sm text-blue-800">{step.description}</p>
-                            {step.search_query && (
-                              <p className="text-xs text-blue-600 mt-1">
-                                Query: "{step.search_query}" ({step.sources_found} sources)
-                              </p>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </motion.div>
-                )}
-
-                {/* Sources */}
-                {message.sources && message.sources.length > 0 && (
-                  <motion.div
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: 'auto' }}
-                    className="mt-4 bg-gray-50 rounded-xl p-4"
-                  >
-                    <h4 className="text-sm font-medium text-gray-900 mb-3 flex items-center gap-2">
-                      <Globe className="w-4 h-4" />
-                      Sources ({message.sources.length})
-                    </h4>
-                    <div className="space-y-3">
-                      {message.sources.map((source, i) => (
-                        <div key={i} className="bg-white rounded-lg p-3 border border-gray-200">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="flex-1">
-                              <h5 className="font-medium text-gray-900 text-sm mb-1">
-                                {source.title}
-                              </h5>
-                              <p className="text-xs text-gray-600 mb-2 line-clamp-2">
-                                {source.snippet}
-                              </p>
-                              <a
-                                href={source.url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-xs text-indigo-600 hover:text-indigo-800 transition-colors"
-                              >
-                                {new URL(source.url).hostname}
-                              </a>
-                            </div>
-                            {source.relevance_score && (
-                              <div className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">
-                                {Math.round(source.relevance_score * 100)}%
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </motion.div>
-                )}
+                </AnimatePresence>
               </div>
-            </motion.div>
-          ))}
-
-          {/* Loading State */}
-          {isLoading && (
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="flex justify-start"
-            >
-              <div className="max-w-4xl mr-8">
-                <div className="bg-white border border-gray-200 shadow-sm rounded-2xl px-6 py-4">
-                  <div className="flex items-center gap-3">
-                    <Loader className="w-4 h-4 animate-spin text-indigo-500" />
-                    <span className="text-sm text-gray-600">{currentStep}</span>
-                  </div>
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+            )}
+          </AnimatePresence>
+        </div>
+        
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input */}
-      <div className="border-t border-gray-200 bg-white/80 backdrop-blur-md p-6">
-        <form onSubmit={handleSubmit} className="max-w-4xl mx-auto">
-          <div className="flex gap-4 items-end">
-            <div className="flex-1 relative">
-              <textarea
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                placeholder="Ask me to research anything..."
-                className="w-full resize-none border border-gray-300 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all duration-200"
-                rows={1}
-                style={{
-                  minHeight: '48px',
-                  maxHeight: '120px',
-                  height: Math.min(120, Math.max(48, input.split('\n').length * 24))
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSubmit(e);
-                  }
-                }}
-              />
-            </div>
-            <button
-              type="submit"
-              disabled={!input.trim() || isLoading}
-              className="bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-xl px-6 py-3 font-medium transition-all duration-200 hover:shadow-lg hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none flex items-center gap-2"
-            >
-              {isLoading ? (
-                <Loader className="w-4 h-4 animate-spin" />
-              ) : (
-                <Send className="w-4 h-4" />
-              )}
-              Research
-            </button>
-          </div>
-        </form>
-      </div>
+      {/* Input Section */}
+      <InputSection
+        input={input}
+        setInput={setInput}
+        isLoading={isLoading}
+        onSubmit={handleSubmit}
+        onKeyDown={handleKeyDown}
+      />
     </div>
   );
 }
