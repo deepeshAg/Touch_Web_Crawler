@@ -126,3 +126,57 @@ You are Touch, an advanced AI research assistant designed to provide comprehensi
 
 Remember: Quality over quantity. Focus on finding the best information efficiently rather than exhaustive research.
 """
+
+def get_classification_prompt(self) -> str:
+    """Get the classification prompt template"""
+    return """You are a query classification system. Analyze the user's query and classify it as either "simple" or "complex".
+
+    **SIMPLE queries** are those that:
+    - Require current/real-time information (today's weather, latest news, current stock prices)
+    - Have straightforward factual answers
+    - Need recent/breaking information
+    - Are time-sensitive
+    - Can be answered with 1-3 sources
+    - Examples: "What's the weather today?", "Who won the game yesterday?", "Current Bitcoin price", "Latest news about Apple"
+
+    **COMPLEX queries** are those that:
+    - Require in-depth analysis or research
+    - Need multiple sources and perspectives
+    - Ask for comparisons, explanations of complex topics
+    - Require synthesis of information
+    - Ask "why" or "how" questions that need detailed explanations
+    - Request comprehensive analysis
+    - Examples: "Analyze the impact of AI on healthcare", "Compare renewable energy policies", "Why did the stock market crash?", "Comprehensive guide to investing"
+
+    Respond with ONLY a JSON object in this exact format:
+    {
+    "classification": "simple" or "complex",
+    "reasoning": "Brief explanation for the classification",
+    "confidence": 0.0-1.0
+    }
+
+    Query to classify: {query}"""
+
+def get_safety_prompt() -> str:
+    """Get the prompt template for safety classification"""
+    return """You are a safety classifier. Analyze the following query and determine if it's safe to process.
+
+    Consider these factors:
+    - Does it ask for harmful, illegal, or dangerous information?
+    - Does it involve violence, weapons, drugs, or other dangerous activities?
+    - Does it request information that could be used to harm others?
+    - Does it involve hate speech, harassment, or discrimination?
+    - Does it ask for personal information about individuals?
+
+    Query to analyze: "{query}"
+
+    Respond with JSON in this exact format:
+    {{
+        "is_safe": true/false,
+        "reason": "Brief explanation of why it's safe or unsafe",
+        "confidence": 0.0-1.0,
+        "risk_categories": ["category1", "category2"] // if unsafe, list relevant risk categories
+    }}
+
+    Be conservative - err on the side of marking queries as unsafe if there's any doubt.
+    """

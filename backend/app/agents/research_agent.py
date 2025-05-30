@@ -7,10 +7,9 @@ import json
 import time
 import re
 from datetime import datetime
-from ..prompts.prompts import research_prompt, simple_query_prompt
+from ..prompts.prompts import research_prompt, simple_query_prompt,get_classification_prompt,get_safety_prompt
 
 from ..tools.web_search import WebSearchTool, WebScrapeTool
-from ..models.schemas import Source, ResearchStep
 from config import settings
 
 class TouchResearchAgent:
@@ -21,10 +20,9 @@ class TouchResearchAgent:
             api_key=settings.OPENAI_API_KEY
         )
         
-        # Separate LLM instance for classification with lower temperature for consistency
         self.classifier_llm = ChatOpenAI(
             model="gpt-4o-mini",
-            temperature=0.0,  # More deterministic for classification
+            temperature=0.0,  
             api_key=settings.OPENAI_API_KEY
         )
         
@@ -87,40 +85,12 @@ class TouchResearchAgent:
             early_stopping_method="generate"
         )
 
-    def _get_classification_prompt(self) -> str:
-        """Get the classification prompt template"""
-        return """You are a query classification system. Analyze the user's query and classify it as either "simple" or "complex".
 
-        **SIMPLE queries** are those that:
-        - Require current/real-time information (today's weather, latest news, current stock prices)
-        - Have straightforward factual answers
-        - Need recent/breaking information
-        - Are time-sensitive
-        - Can be answered with 1-3 sources
-        - Examples: "What's the weather today?", "Who won the game yesterday?", "Current Bitcoin price", "Latest news about Apple"
-
-        **COMPLEX queries** are those that:
-        - Require in-depth analysis or research
-        - Need multiple sources and perspectives
-        - Ask for comparisons, explanations of complex topics
-        - Require synthesis of information
-        - Ask "why" or "how" questions that need detailed explanations
-        - Request comprehensive analysis
-        - Examples: "Analyze the impact of AI on healthcare", "Compare renewable energy policies", "Why did the stock market crash?", "Comprehensive guide to investing"
-
-        Respond with ONLY a JSON object in this exact format:
-        {
-        "classification": "simple" or "complex",
-        "reasoning": "Brief explanation for the classification",
-        "confidence": 0.0-1.0
-        }
-
-        Query to classify: {query}"""
 
     async def _classify_query_with_llm(self, query: str) -> Dict[str, any]:
         """Use LLM to classify query as simple or complex"""
         try:
-            prompt = self._get_classification_prompt().format(query=query)
+            prompt = get_classification_prompt().format(query=query)
             
             messages = [HumanMessage(content=prompt)]
             response = self.classifier_llm.invoke(messages)
@@ -161,68 +131,57 @@ class TouchResearchAgent:
             print(f"⚠️ Unexpected classification error: {e}")
             return self._fallback_classification(query)
 
-    def _fallback_classification(self, query: str) -> Dict[str, any]:
-        """Fallback classification using simple heuristics"""
-        simple_keywords = [
-            "today", "latest", "current", "now", "recent", "who won", 
-            "score", "result", "winner", "live", "breaking news",
-            "stock price", "weather", "time", "exchange rate",
-            "what is", "when is", "where is"
-        ]
-        
-        complex_keywords = [
-            "analyze", "compare", "research", "comprehensive", "in-depth",
-            "why", "how does", "what are the implications", "pros and cons",
-            "detailed analysis", "complete guide", "explain", "impact of",
-            "difference between", "strategy", "trends"
-        ]
-        
-        query_lower = query.lower()
-        
-        # Check for explicit complex indicators
-        if any(keyword in query_lower for keyword in complex_keywords):
-            return {
-                "classification": "complex",
-                "reasoning": "Contains complex analysis keywords",
-                "confidence": 0.8
-            }
-        
-        # Check for simple/real-time indicators
-        if any(keyword in query_lower for keyword in simple_keywords):
-            return {
-                "classification": "simple",
-                "reasoning": "Contains time-sensitive or simple factual keywords",
-                "confidence": 0.8
-            }
-        
-        # Length-based heuristic
-        word_count = len(query.split())
-        if word_count <= 5:
-            return {
-                "classification": "simple",
-                "reasoning": "Short query suggests simple factual request",
-                "confidence": 0.6
-            }
-        else:
-            return {
-                "classification": "complex",
-                "reasoning": "Longer query suggests need for detailed research",
-                "confidence": 0.6
-            }
 
-    def _sanitize_input(self, query: str) -> Tuple[bool, str]:
-        """Check if query is safe and appropriate"""
-        dangerous_keywords = [
-            "how to make bomb", "how to hack", "illegal drugs", "suicide methods",
-            "how to hurt", "how to harm"
-        ]
-        
-        query_lower = query.lower()
-        for keyword in dangerous_keywords:
-            if keyword in query_lower:
-                return False, f"I cannot help with queries related to harmful or illegal activities."
-        
-        return True, query
+
+    async def _sanitize_input(self, query: str) -> Tuple[bool, str]:
+        """Use LLM to check if query is safe and appropriate"""
+        try:
+            prompt = get_safety_prompt().format(query=query)
+            
+            messages = [HumanMessage(content=prompt)]
+            response = self.safety_llm.invoke(messages)
+            
+            # Parse the JSON response
+            response_text = response.content.strip()
+            
+            # Extract JSON from response if it's wrapped in markdown
+            if "```json" in response_text:
+                json_start = response_text.find("```json") + 7
+                json_end = response_text.find("```", json_start)
+                response_text = response_text[json_start:json_end].strip()
+            elif "```" in response_text:
+                json_start = response_text.find("```") + 3
+                json_end = response_text.find("```", json_start)
+                response_text = response_text[json_start:json_end].strip()
+            
+            safety_result = json.loads(response_text)
+            
+            # Validate the response
+            if "is_safe" not in safety_result:
+                raise ValueError("Missing is_safe field")
+            
+            if not isinstance(safety_result["is_safe"], bool):
+                raise ValueError("Invalid is_safe value - must be boolean")
+            
+            # Set defaults for missing fields
+            safety_result.setdefault("reason", "No reason provided")
+            safety_result.setdefault("confidence", 0.7)
+            
+            is_safe = safety_result["is_safe"]
+            reason = safety_result.get("reason", "Query flagged as potentially unsafe")
+            
+            if is_safe:
+                return True, query
+            else:
+                return False, f"I cannot help with this query. {reason}"
+                
+        except (json.JSONDecodeError, ValueError, KeyError) as e:
+            print(f"⚠️ LLM safety check error: {e}")
+            # Fallback to keyword-based safety check
+            return self._fallback_safety_check(query)
+        except Exception as e:
+            print(f"⚠️ Unexpected safety check error: {e}")
+            return self._fallback_safety_check(query)
 
     async def research_query(self, query: str) -> Dict:
         """Main research method with LLM-based agent selection"""
@@ -247,6 +206,7 @@ class TouchResearchAgent:
             
             print(f"🤖 LLM classified query as '{query_type}' (confidence: {classification_result['confidence']:.2f})")
             print(f"📝 Reasoning: {classification_result['reasoning']}")
+            
             
             # Choose appropriate agent based on classification
             agent_executor = self.simple_agent if query_type == "simple" else self.research_agent

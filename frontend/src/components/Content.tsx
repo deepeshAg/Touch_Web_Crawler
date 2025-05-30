@@ -61,7 +61,7 @@ export default function MessageContent({
           )}
         </div>
         
-        {confidence_score && !isStreaming && (
+        {confidence_score !== 0  && !isStreaming && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}

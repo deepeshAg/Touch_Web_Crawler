@@ -47,11 +47,12 @@ class StreamingResearchService:
             
             # Step 1: Research steps
             steps = [
-                "Initializing LangChain research agent",
-                "Agent analyzing query and planning research", 
-                "Executing research plan with tools",
-                "Gathering information from sources",
-                "Processing and analyzing data"
+                "Initializing intelligent research agent with advanced capabilities",
+                "Analyzing your query and formulating comprehensive research strategy", 
+                "Deploying specialized tools and executing multi-phase research plan",
+                "Gathering high-quality information from authoritative sources",
+                "Processing, cross-referencing, and synthesizing collected data",
+                "Compiling insights and preparing comprehensive response"
             ]
             
             for i, step_desc in enumerate(steps, 1):
