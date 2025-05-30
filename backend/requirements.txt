@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+langchain
+langchain-openai
+langchain-community
+pydantic
+python-dotenv
+httpx
+beautifulsoup4
+requests
+python-multipart
+cors
+openai
+tavily-python
