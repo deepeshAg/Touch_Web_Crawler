@@ -45,7 +45,7 @@ interface Message {
 }
 
 interface StreamEvent {
-  type: 'research_step' | 'content_chunk' | 'sources' | 'complete' | 'error' | 'start_synthesis';
+  type: 'research_step' | 'content_chunk' | 'sources' | 'complete' | 'error' | 'start_synthesis' | "connected";
   data: any;
 }
 
@@ -286,20 +286,20 @@ export default function ChatInterface() {
 
   const handleSubmit = () => {
     if (!input.trim() || isLoading) return;
-
+  
     const userMessage: Message = {
       id: Date.now().toString(),
       type: 'user',
       content: input,
       timestamp: new Date()
     };
-
+  
     setMessages(prev => [...prev, userMessage]);
     const query = input;
     setInput('');
     setIsLoading(true);
     setCurrentStep('Initializing research...');
-
+  
     // Create assistant message placeholder
     const assistantId = (Date.now() + 1).toString();
     const assistantMessage: Message = {
@@ -315,36 +315,46 @@ export default function ChatInterface() {
       showContent: false,
       researchComplete: false
     };
-
+  
     setMessages(prev => [...prev, assistantMessage]);
-
-    // Create abort controller for this request
+  
+    // Create abort controller
     const controller = new AbortController();
     setAbortController(controller);
-
+  
     try {
-      // Use EventSource for streaming
-      const eventSource = new EventSource(
-        `${API_BASE}/api/research/stream?query=${encodeURIComponent(query)}`,
-        { }
-      );
+      console.log('🔗 Creating EventSource for:', query);
       
+      // FIXED: Proper URL encoding and connection
+      const encodedQuery = encodeURIComponent(query);
+      const streamUrl = `${API_BASE}/api/research/stream?query=${encodedQuery}`;
+      console.log('📡 Stream URL:', streamUrl);
+      
+      const eventSource = new EventSource(streamUrl);
       eventSourceRef.current = eventSource;
-
-      eventSource.onopen = () => {
-        console.log('Stream opened');
+  
+      eventSource.onopen = (event) => {
+        console.log('✅ EventSource opened', event);
       };
-
+  
       eventSource.onmessage = (event) => {
+        console.log('📨 Received:', event.data);
+        
         try {
           const streamEvent: StreamEvent = JSON.parse(event.data);
+          console.log('📋 Parsed event:', streamEvent.type, streamEvent.data);
           
           setMessages(prev => prev.map(msg => {
             if (msg.id === assistantId) {
               const updatedMsg = { ...msg };
               
               switch (streamEvent.type) {
+                case 'connected':
+                  console.log('🔗 Stream connected');
+                  break;
+                  
                 case 'research_step':
+                  console.log('👣 Research step:', streamEvent.data.description);
                   setCurrentStep(streamEvent.data.description);
                   updatedMsg.research_steps = [
                     ...(updatedMsg.research_steps || []),
@@ -354,26 +364,27 @@ export default function ChatInterface() {
                   break;
                 
                 case 'sources':
+                  console.log('📚 Sources received:', streamEvent.data.sources.length);
                   updatedMsg.sources = streamEvent.data.sources;
                   updatedMsg.showSources = true;
+                  // FIXED: Set researchComplete when sources arrive
                   updatedMsg.researchComplete = true;
                   break;
                 
                 case 'start_synthesis':
-                  if (updatedMsg.researchComplete) {
-                    updatedMsg.showContent = true;
-                    setCurrentStep('Generating comprehensive answer...');
-                  }
+                  console.log('🎯 Starting synthesis');
+                  setCurrentStep('Generating comprehensive answer...');
+                  updatedMsg.showContent = true; // FIXED: Show content area immediately
                   break;
                 
                 case 'content_chunk':
-                  if (updatedMsg.researchComplete) {
-                    updatedMsg.content += streamEvent.data.chunk;
-                    updatedMsg.showContent = true;
-                  }
+                  console.log('📝 Content chunk:', streamEvent.data.chunk.substring(0, 20) + '...');
+                  updatedMsg.content += streamEvent.data.chunk;
+                  updatedMsg.showContent = true;
                   break;
                 
                 case 'complete':
+                  console.log('✅ Stream completed');
                   updatedMsg.isStreaming = false;
                   updatedMsg.confidence_score = streamEvent.data.confidence_score;
                   updatedMsg.processing_time = streamEvent.data.processing_time;
@@ -386,6 +397,7 @@ export default function ChatInterface() {
                   break;
                 
                 case 'error':
+                  console.error('❌ Stream error:', streamEvent.data.message);
                   updatedMsg.content = streamEvent.data.message || 'An error occurred during research';
                   updatedMsg.isStreaming = false;
                   updatedMsg.showContent = true;
@@ -395,6 +407,9 @@ export default function ChatInterface() {
                   eventSourceRef.current = null;
                   setAbortController(null);
                   break;
+                  
+                default:
+                  console.log('❓ Unknown event type:', streamEvent.type);
               }
               
               return updatedMsg;
@@ -402,37 +417,41 @@ export default function ChatInterface() {
             return msg;
           }));
         } catch (error) {
-          console.error('Error parsing stream event:', error);
+          console.error('❌ Error parsing stream event:', error, 'Raw data:', event.data);
         }
       };
-
+  
       eventSource.onerror = (error) => {
-        console.error('EventSource error:', error);
+        console.error('❌ EventSource error:', error);
+        console.log('EventSource readyState:', eventSource.readyState);
+        console.log('EventSource url:', eventSource.url);
+        
         setMessages(prev => prev.map(msg => {
           if (msg.id === assistantId && msg.isStreaming) {
             return {
               ...msg,
-              content: msg.content || 'Sorry, I encountered an error while researching your query. Please try again.',
+              content: msg.content || 'Sorry, I encountered a connection error. Please try again.',
               isStreaming: false,
               showContent: true
             };
           }
           return msg;
         }));
+        
         setIsLoading(false);
         setCurrentStep('');
         eventSource.close();
         eventSourceRef.current = null;
         setAbortController(null);
       };
-
+  
     } catch (error) {
-      console.error('Stream setup error:', error);
+      console.error('❌ Stream setup error:', error);
       setMessages(prev => prev.map(msg => {
         if (msg.id === assistantId) {
           return {
             ...msg,
-            content: 'Sorry, I encountered an error while researching your query. Please try again.',
+            content: 'Sorry, I encountered an error setting up the connection. Please try again.',
             isStreaming: false,
             showContent: true
           };

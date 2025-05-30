@@ -2,10 +2,12 @@ from langchain.agents import AgentExecutor, create_openai_tools_agent
 from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 from langchain.schema import HumanMessage, SystemMessage
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Literal
 import json
 import time
+import re
 from datetime import datetime
+from ..prompts.prompts import research_prompt, simple_query_prompt
 
 from ..tools.web_search import WebSearchTool, WebScrapeTool
 from ..models.schemas import Source, ResearchStep
@@ -14,8 +16,15 @@ from config import settings
 class TouchResearchAgent:
     def __init__(self):
         self.llm = ChatOpenAI(
-            model="gpt-4-turbo-preview",
+            model="gpt-4o-mini",
             temperature=0.1,
+            api_key=settings.OPENAI_API_KEY
+        )
+        
+        # Separate LLM instance for classification with lower temperature for consistency
+        self.classifier_llm = ChatOpenAI(
+            model="gpt-4o-mini",
+            temperature=0.0,  # More deterministic for classification
             api_key=settings.OPENAI_API_KEY
         )
         
@@ -24,58 +33,199 @@ class TouchResearchAgent:
             WebScrapeTool()
         ]
         
-        self.system_prompt = """You are Touch, an advanced AI research assistant. Your mission is to:
+        # Create different agents for different query types
+        self.research_agent = self._create_research_agent()
+        self.simple_agent = self._create_simple_agent()
 
-1. **Multi-Step Research**: Break complex queries into sub-questions and research each systematically
-2. **Source Verification**: Use multiple sources and cross-reference information
-3. **Synthesis**: Combine findings into coherent, well-structured answers
-4. **Citation**: Always cite sources with URLs and brief descriptions
-5. **Safety**: Filter out harmful, illegal, or inappropriate content
+    def _create_research_agent(self):
+        """Create agent for complex research queries"""
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", research_prompt()),
+            ("user", "{input}"),
+            ("assistant", "{agent_scratchpad}")
+        ])
+        
+        agent = create_openai_tools_agent(
+            llm=self.llm,
+            tools=self.tools,
+            prompt=prompt
+        )
+        
+        return AgentExecutor(
+            agent=agent,
+            tools=self.tools,
+            verbose=True,
+            max_iterations=15,
+            max_execution_time=60,
+            handle_parsing_errors=True,
+            return_intermediate_steps=True,
+            early_stopping_method="generate"
+        )
 
-**Research Process:**
-- Analyze the query and identify key research areas
-- Perform targeted searches for each area
-- Scrape detailed content from the most relevant sources
-- Synthesize findings into a comprehensive answer
-- Provide proper citations
+    def _create_simple_agent(self):
+        """Create agent for simple/real-time queries"""
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", simple_query_prompt()),
+            ("user", "{input}"),
+            ("assistant", "{agent_scratchpad}")
+        ])
+        
+        agent = create_openai_tools_agent(
+            llm=self.llm,
+            tools=self.tools,
+            prompt=prompt
+        )
+        
+        return AgentExecutor(
+            agent=agent,
+            tools=self.tools,
+            verbose=True,
+            max_iterations=5,
+            max_execution_time=30,
+            handle_parsing_errors=True,
+            return_intermediate_steps=True,
+            early_stopping_method="generate"
+        )
 
-**Safety Guidelines:**
-- Refuse queries about illegal activities, harmful instructions, or dangerous content
-- Filter out obviously malicious or inappropriate web content
-- Focus on authoritative, credible sources
-- If content seems suspicious, flag it and seek alternative sources
+    def _get_classification_prompt(self) -> str:
+        """Get the classification prompt template"""
+        return """You are a query classification system. Analyze the user's query and classify it as either "simple" or "complex".
 
-Always think step-by-step and explain your research process."""
+        **SIMPLE queries** are those that:
+        - Require current/real-time information (today's weather, latest news, current stock prices)
+        - Have straightforward factual answers
+        - Need recent/breaking information
+        - Are time-sensitive
+        - Can be answered with 1-3 sources
+        - Examples: "What's the weather today?", "Who won the game yesterday?", "Current Bitcoin price", "Latest news about Apple"
+
+        **COMPLEX queries** are those that:
+        - Require in-depth analysis or research
+        - Need multiple sources and perspectives
+        - Ask for comparisons, explanations of complex topics
+        - Require synthesis of information
+        - Ask "why" or "how" questions that need detailed explanations
+        - Request comprehensive analysis
+        - Examples: "Analyze the impact of AI on healthcare", "Compare renewable energy policies", "Why did the stock market crash?", "Comprehensive guide to investing"
+
+        Respond with ONLY a JSON object in this exact format:
+        {
+        "classification": "simple" or "complex",
+        "reasoning": "Brief explanation for the classification",
+        "confidence": 0.0-1.0
+        }
+
+        Query to classify: {query}"""
+
+    async def _classify_query_with_llm(self, query: str) -> Dict[str, any]:
+        """Use LLM to classify query as simple or complex"""
+        try:
+            prompt = self._get_classification_prompt().format(query=query)
+            
+            messages = [HumanMessage(content=prompt)]
+            response = self.classifier_llm.invoke(messages)
+            
+            # Parse the JSON response
+            response_text = response.content.strip()
+            
+            # Extract JSON from response if it's wrapped in markdown
+            if "```json" in response_text:
+                json_start = response_text.find("```json") + 7
+                json_end = response_text.find("```", json_start)
+                response_text = response_text[json_start:json_end].strip()
+            elif "```" in response_text:
+                json_start = response_text.find("```") + 3
+                json_end = response_text.find("```", json_start)
+                response_text = response_text[json_start:json_end].strip()
+            
+            classification_result = json.loads(response_text)
+            
+            # Validate the response
+            if "classification" not in classification_result:
+                raise ValueError("Missing classification field")
+            
+            if classification_result["classification"] not in ["simple", "complex"]:
+                raise ValueError("Invalid classification value")
+            
+            # Set defaults for missing fields
+            classification_result.setdefault("reasoning", "No reasoning provided")
+            classification_result.setdefault("confidence", 0.7)
+            
+            return classification_result
+            
+        except (json.JSONDecodeError, ValueError, KeyError) as e:
+            print(f"⚠️ LLM classification error: {e}")
+            # Fallback to simple heuristic
+            return self._fallback_classification(query)
+        except Exception as e:
+            print(f"⚠️ Unexpected classification error: {e}")
+            return self._fallback_classification(query)
+
+    def _fallback_classification(self, query: str) -> Dict[str, any]:
+        """Fallback classification using simple heuristics"""
+        simple_keywords = [
+            "today", "latest", "current", "now", "recent", "who won", 
+            "score", "result", "winner", "live", "breaking news",
+            "stock price", "weather", "time", "exchange rate",
+            "what is", "when is", "where is"
+        ]
+        
+        complex_keywords = [
+            "analyze", "compare", "research", "comprehensive", "in-depth",
+            "why", "how does", "what are the implications", "pros and cons",
+            "detailed analysis", "complete guide", "explain", "impact of",
+            "difference between", "strategy", "trends"
+        ]
+        
+        query_lower = query.lower()
+        
+        # Check for explicit complex indicators
+        if any(keyword in query_lower for keyword in complex_keywords):
+            return {
+                "classification": "complex",
+                "reasoning": "Contains complex analysis keywords",
+                "confidence": 0.8
+            }
+        
+        # Check for simple/real-time indicators
+        if any(keyword in query_lower for keyword in simple_keywords):
+            return {
+                "classification": "simple",
+                "reasoning": "Contains time-sensitive or simple factual keywords",
+                "confidence": 0.8
+            }
+        
+        # Length-based heuristic
+        word_count = len(query.split())
+        if word_count <= 5:
+            return {
+                "classification": "simple",
+                "reasoning": "Short query suggests simple factual request",
+                "confidence": 0.6
+            }
+        else:
+            return {
+                "classification": "complex",
+                "reasoning": "Longer query suggests need for detailed research",
+                "confidence": 0.6
+            }
 
     def _sanitize_input(self, query: str) -> Tuple[bool, str]:
         """Check if query is safe and appropriate"""
         dangerous_keywords = [
-            "how to make", "bomb", "weapon", "hack", "illegal", "drug", "suicide"
+            "how to make bomb", "how to hack", "illegal drugs", "suicide methods",
+            "how to hurt", "how to harm"
         ]
         
         query_lower = query.lower()
         for keyword in dangerous_keywords:
             if keyword in query_lower:
-                return False, f"I cannot help with queries related to: {keyword}"
+                return False, f"I cannot help with queries related to harmful or illegal activities."
         
         return True, query
 
-    def _content_filter(self, content: str) -> str:
-        """Filter and sanitize web content"""
-        # Remove potential prompt injection attempts
-        filtered_content = content.replace("Ignore previous instructions", "")
-        filtered_content = filtered_content.replace("Ignore all previous", "")
-        
-        # Basic content moderation
-        inappropriate_terms = ["hate speech", "violence", "explicit"]
-        for term in inappropriate_terms:
-            if term in filtered_content.lower():
-                filtered_content = filtered_content.replace(term, "[FILTERED]")
-        
-        return filtered_content
-
     async def research_query(self, query: str) -> Dict:
-        """Main research method"""
+        """Main research method with LLM-based agent selection"""
         start_time = time.time()
         
         # Safety check
@@ -86,154 +236,295 @@ Always think step-by-step and explain your research process."""
                 "sources": [],
                 "research_steps": [],
                 "processing_time": time.time() - start_time,
-                "confidence_score": 0.0
+                "confidence_score": 0.0,
+                "query_classification": "blocked"
             }
         
-        research_steps = []
-        all_sources = []
-        
         try:
-            # Step 1: Analyze query and plan research
-            step1 = ResearchStep(
-                step_number=1,
-                description="Analyzing query and planning research approach",
-                timestamp=datetime.now()
-            )
-            research_steps.append(step1)
+            # Use LLM to classify query
+            classification_result = await self._classify_query_with_llm(query)
+            query_type = classification_result["classification"]
             
-            # Step 2: Initial broad search
-            search_tool = WebSearchTool()
-            initial_results = search_tool._run(query)
+            print(f"🤖 LLM classified query as '{query_type}' (confidence: {classification_result['confidence']:.2f})")
+            print(f"📝 Reasoning: {classification_result['reasoning']}")
             
-            step2 = ResearchStep(
-                step_number=2,
-                description=f"Performed initial web search",
-                search_query=query,
-                sources_found=len(initial_results),
-                timestamp=datetime.now()
-            )
-            research_steps.append(step2)
+            # Choose appropriate agent based on classification
+            agent_executor = self.simple_agent if query_type == "simple" else self.research_agent
             
-            # Step 3: Refine search with specific sub-queries
-            refined_queries = self._generate_sub_queries(query)
-            scrape_tool = WebScrapeTool()
+            # For real-time queries, enhance with temporal context
+            if query_type == "simple":
+                query = self._enhance_realtime_query(query)
             
-            for i, sub_query in enumerate(refined_queries[:3]):  # Limit to 3 sub-queries
-                sub_results = search_tool._run(sub_query)
-                
-                step = ResearchStep(
-                    step_number=3 + i,
-                    description=f"Researching: {sub_query}",
-                    search_query=sub_query,
-                    sources_found=len(sub_results),
-                    timestamp=datetime.now()
-                )
-                research_steps.append(step)
-                
-                # Scrape top results for detailed content
-                for result in sub_results[:2]:  # Top 2 results per sub-query
-                    detailed_content = scrape_tool._run(result["url"])
-                    result["detailed_content"] = self._content_filter(detailed_content)
-                
-                all_sources.extend(sub_results)
+            # Execute the agent
+            result = agent_executor.invoke({"input": query})
+            print(f"✅ Agent execution completed")
             
-            # Step 4: Synthesize information
-            synthesis_step = ResearchStep(
-                step_number=len(research_steps) + 1,
-                description="Synthesizing information and generating answer",
-                timestamp=datetime.now()
-            )
-            research_steps.append(synthesis_step)
+            # Check if agent stopped due to max iterations
+            answer = result.get("output", "")
+            if "Agent stopped due to max iterations" in answer:
+                print("⚠️ Agent hit max iterations, attempting recovery...")
+                answer = self._recover_from_max_iterations(result, query_type)
             
-            # Generate comprehensive answer
-            answer = await self._synthesize_answer(query, all_sources)
+            # Extract intermediate steps and sources
+            intermediate_steps = result.get("intermediate_steps", [])
+            research_steps = self._convert_steps_to_research_steps(intermediate_steps)
+            sources = self._extract_sources_from_steps(intermediate_steps)
             
-            # Prepare final sources
-            final_sources = [
-                Source(
-                    title=src["title"],
-                    url=src["url"],
-                    snippet=src["snippet"],
-                    relevance_score=src.get("relevance_score", 0.8)
-                )
-                for src in all_sources[:8]  # Top 8 sources
-            ]
+            # Format the answer
+            formatted_answer = self._ensure_markdown_formatting(answer, sources)
             
             return {
-                "answer": answer,
-                "sources": final_sources,
+                "answer": formatted_answer,
+                "sources": sources,
                 "research_steps": research_steps,
                 "processing_time": time.time() - start_time,
-                "confidence_score": self._calculate_confidence(all_sources, answer)
+                "confidence_score": self._calculate_confidence(sources, formatted_answer),
+                "query_classification": {
+                    "type": query_type,
+                    "reasoning": classification_result["reasoning"],
+                    "confidence": classification_result["confidence"]
+                }
             }
             
         except Exception as e:
+            import traceback
+            error_detail = traceback.format_exc()
+            print(f"❌ Agent execution error: {error_detail}")
+            
             return {
                 "answer": f"I encountered an error while researching your query: {str(e)}",
                 "sources": [],
-                "research_steps": research_steps,
+                "research_steps": [],
                 "processing_time": time.time() - start_time,
-                "confidence_score": 0.0
+                "confidence_score": 0.0,
+                "query_classification": "error"
             }
 
-    def _generate_sub_queries(self, main_query: str) -> List[str]:
-        """Generate focused sub-queries for deeper research"""
-        prompt = f"""
-        Given this main research query: "{main_query}"
+    def _enhance_realtime_query(self, query: str) -> str:
+        """Enhance real-time queries with current date context"""
+        current_date = datetime.now().strftime("%Y-%m-%d")
         
-        Generate 3 specific sub-questions that would help thoroughly research this topic.
-        Focus on different aspects like current status, comparisons, implications, etc.
+        # Add date context for time-sensitive queries
+        if any(word in query.lower() for word in ["today", "latest", "current", "now"]):
+            query = f"{query} {current_date}"
         
-        Return only the questions, one per line.
-        """
-        
-        try:
-            response = self.llm.invoke([HumanMessage(content=prompt)])
-            sub_queries = [q.strip() for q in response.content.split('\n') if q.strip()]
-            return sub_queries[:3]
-        except:
-            return [main_query]  # Fallback to main query
+        return query
 
-    async def _synthesize_answer(self, query: str, sources: List[Dict]) -> str:
-        """Synthesize research findings into a comprehensive answer"""
-        
-        # Prepare context from sources
-        context = ""
-        for i, source in enumerate(sources[:6]):  # Use top 6 sources
-            context += f"\nSource {i+1} ({source['title']}):\n{source.get('detailed_content', source['snippet'])}\n"
-        
-        synthesis_prompt = f"""
-        Research Query: {query}
-        
-        Based on the following research findings, provide a comprehensive, well-structured answer:
-        
-        {context}
-        
-        Requirements:
-        1. Synthesize information from multiple sources
-        2. Structure your answer with clear sections/points
-        3. Include specific citations like "According to [Source Name]..."
-        4. Highlight key findings and conclusions
-        5. If sources conflict, acknowledge different perspectives
-        6. Keep the answer informative but concise (max 800 words)
-        
-        Answer:"""
+    # ... (rest of the methods remain the same as in your original code)
+    def _recover_from_max_iterations(self, result: Dict, query_type: str) -> str:
+        """Attempt to recover useful information when max iterations is hit"""
+        try:
+            intermediate_steps = result.get("intermediate_steps", [])
+            
+            if not intermediate_steps:
+                return "I couldn't find sufficient information to answer your query completely. Please try rephrasing your question."
+            
+            # Extract information from the steps we did complete
+            partial_info = []
+            for step_tuple in intermediate_steps:
+                if len(step_tuple) >= 2:
+                    action, observation = step_tuple[0], step_tuple[1]
+                    
+                    if isinstance(observation, str) and len(observation) > 50:
+                        partial_info.append(observation[:200])
+                    elif isinstance(observation, (list, tuple)) and len(observation) > 0:
+                        # Extract useful info from search results
+                        for item in observation[:3]:
+                            if isinstance(item, dict) and "snippet" in item:
+                                partial_info.append(item["snippet"][:150])
+            
+            if partial_info:
+                combined_info = " ".join(partial_info)
+                return f"# Partial Research Results\n\nBased on my initial research, here's what I found:\n\n{combined_info}\n\n*Note: This is a partial response. For more complete information, please try rephrasing your query or breaking it into smaller questions.*"
+            else:
+                return "I wasn't able to gather enough information to answer your query. Please try rephrasing your question or making it more specific."
+                
+        except Exception as e:
+            print(f"Error in recovery: {e}")
+            return "I encountered an issue while researching your query. Please try rephrasing your question."
+
+    def _convert_steps_to_research_steps(self, intermediate_steps: List) -> List[Dict]:
+        """Convert LangChain intermediate steps to research steps format"""
+        research_steps = []
         
         try:
-            response = self.llm.invoke([HumanMessage(content=synthesis_prompt)])
-            return response.content
+            for i, step_tuple in enumerate(intermediate_steps):
+                if len(step_tuple) >= 2:
+                    action, observation = step_tuple[0], step_tuple[1]
+                    
+                    # Safely get tool input
+                    tool_input = ""
+                    if hasattr(action, 'tool_input'):
+                        if isinstance(action.tool_input, dict):
+                            tool_input = str(action.tool_input.get('query', action.tool_input))[:100]
+                        else:
+                            tool_input = str(action.tool_input)[:100]
+                    
+                    # Safely get tool name
+                    tool_name = ""
+                    if hasattr(action, 'tool'):
+                        tool_name = str(action.tool)
+                    
+                    # Count sources found
+                    sources_found = 0
+                    if isinstance(observation, (list, tuple)):
+                        sources_found = len(observation)
+                    elif isinstance(observation, str) and observation:
+                        sources_found = 1
+                    
+                    step = {
+                        "step_number": i + 1,
+                        "description": f"Used {tool_name}: {tool_input}{'...' if len(tool_input) >= 100 else ''}",
+                        "search_query": tool_input if tool_name == "web_search" else None,
+                        "sources_found": sources_found,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    research_steps.append(step)
+                    
         except Exception as e:
-            return f"Error synthesizing answer: {str(e)}"
+            print(f"Error converting steps: {e}")
+            research_steps = [{
+                "step_number": 1,
+                "description": "Research completed",
+                "sources_found": 0,
+                "timestamp": datetime.now().isoformat()
+            }]
+        
+        return research_steps
+
+    def _extract_sources_from_steps(self, intermediate_steps: List) -> List[Dict]:
+        """Extract sources from intermediate steps"""
+        sources = []
+        
+        try:
+            for step_tuple in intermediate_steps:
+                if len(step_tuple) >= 2:
+                    action, observation = step_tuple[0], step_tuple[1]
+                    
+                    # Check if this was a web_search action
+                    tool_name = ""
+                    if hasattr(action, 'tool'):
+                        tool_name = str(action.tool)
+                    
+                    if tool_name == "web_search" and isinstance(observation, (list, tuple)):
+                        items_to_process = list(observation)[:5]
+                        
+                        for item in items_to_process:
+                            if isinstance(item, dict):
+                                title = item.get("title", "")
+                                url = item.get("url", "")
+                                snippet = item.get("snippet", "")
+                                
+                                if title and url:
+                                    source = {
+                                        "title": str(title),
+                                        "url": str(url),
+                                        "snippet": str(snippet),
+                                        "relevance_score": float(item.get("relevance_score", 0.8))
+                                    }
+                                    sources.append(source)
+        
+        except Exception as e:
+            print(f"Error extracting sources: {e}")
+            sources = []
+        
+        # Remove duplicates based on URL
+        try:
+            seen_urls = set()
+            unique_sources = []
+            for source in sources:
+                url = source.get("url", "")
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    unique_sources.append(source)
+            
+            return unique_sources[:8]
+            
+        except Exception as e:
+            print(f"Error deduplicating sources: {e}")
+            return sources[:8]
+
+    def _ensure_markdown_formatting(self, answer: str, sources: List[Dict]) -> str:
+        """Ensure proper markdown formatting"""
+        try:
+            if not answer or not isinstance(answer, str):
+                answer = "No answer was generated."
+            
+            # Remove the "Agent stopped" message if present
+            if "Agent stopped due to max iterations" in answer:
+                answer = answer.replace("Agent stopped due to max iterations.", "").strip()
+                if not answer:
+                    answer = "Research completed with available information."
+            
+            # Add header if missing
+            if not answer.strip().startswith('#'):
+                lines = answer.strip().split('\n')
+                if lines:
+                    first_line = lines[0].strip()
+                    if len(first_line) < 100 and not first_line.endswith(':'):
+                        answer = f"# {first_line}\n\n" + '\n'.join(lines[1:])
+                    else:
+                        answer = f"# Research Results\n\n{answer}"
+            
+            # Ensure proper spacing
+            answer = re.sub(r'([^\n])\n(#{1,6}\s)', r'\1\n\n\2', answer)
+            answer = re.sub(r'(#{1,6}.*)\n([^\n#])', r'\1\n\n\2', answer)
+            
+            # Add sources if available and not already present
+            if "## Sources" not in answer and "## References" not in answer and sources:
+                sources_section = self._generate_sources_markdown(sources)
+                answer += f"\n\n{sources_section}"
+            
+            # Clean up excessive blank lines
+            answer = re.sub(r'\n{3,}', '\n\n', answer)
+            
+            return answer.strip()
+            
+        except Exception as e:
+            print(f"Error formatting markdown: {e}")
+            return f"# Research Results\n\n{answer}\n\nNote: There was an error formatting this response."
+
+    def _generate_sources_markdown(self, sources: List[Dict]) -> str:
+        """Generate markdown sources section"""
+        try:
+            if not sources:
+                return ""
+            
+            sources_md = "## Sources\n\n"
+            
+            for i, source in enumerate(sources, 1):
+                title = source.get('title', 'Unknown Title')
+                url = source.get('url', '#')
+                snippet = source.get('snippet', '')
+                
+                if len(snippet) > 150:
+                    snippet = snippet[:147] + "..."
+                
+                sources_md += f"{i}. **[{title}]({url})**\n"
+                if snippet:
+                    sources_md += f"   *{snippet}*\n\n"
+                else:
+                    sources_md += "\n"
+            
+            return sources_md
+            
+        except Exception as e:
+            print(f"Error generating sources markdown: {e}")
+            return "## Sources\n\nError generating sources list.\n"
 
     def _calculate_confidence(self, sources: List[Dict], answer: str) -> float:
-        """Calculate confidence score based on sources and answer quality"""
-        if not sources:
-            return 0.0
-        
-        # Factors affecting confidence
-        source_count = min(len(sources), 10) / 10  # Max score for 10+ sources
-        avg_relevance = sum(s.get("relevance_score", 0.5) for s in sources) / len(sources)
-        answer_length = min(len(answer.split()), 500) / 500  # Reasonable length
-        
-        confidence = (source_count * 0.4 + avg_relevance * 0.4 + answer_length * 0.2)
-        return round(confidence, 2)
+        """Calculate confidence score"""
+        try:
+            if not sources:
+                return 0.0
+            
+            source_count = min(len(sources), 8) / 8
+            avg_relevance = sum(s.get("relevance_score", 0.5) for s in sources) / len(sources)
+            answer_length = min(len(str(answer).split()), 500) / 500
+            
+            confidence = (source_count * 0.4 + avg_relevance * 0.4 + answer_length * 0.2)
+            return round(confidence, 2)
+            
+        except Exception as e:
+            print(f"Error calculating confidence: {e}")
+            return 0.5

@@ -35,6 +35,7 @@ class WebSearchTool(BaseTool):
         client = TavilyClient(api_key=settings.TAVILY_API_KEY)
         results = client.search(
             query=query,
+
         )
         
         print(results)
