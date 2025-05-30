@@ -11,6 +11,14 @@ interface MessageContentProps {
   processing_time?: number;
 }
 
+
+function cleanMarkdown(md: string): string {
+  md = md.replace(/\n{3,}/g, '\n\n');
+  md = md.replace(/([^\n])(\n#+ )/g, '$1\n$2');
+  md = md.replace(/([^\n])(\n[-*] )/g, '$1\n$2');
+  return md.trim();
+}
+
 export default function MessageContent({ 
   content, 
   isStreaming, 
@@ -35,24 +43,22 @@ export default function MessageContent({
             <Markdown
               components={{
                 h1: ({ children }) => (
-                  <h1 className="text-2xl font-bold text-white mt-8 mb-6 first:mt-0 leading-tight">
-                    {children}
-                  </h1>
+                  <h1 className="text-2xl font-bold text-white mt-8 mb-6 first:mt-0 leading-tight">{children}</h1>
                 ),
                 h2: ({ children }) => (
-                  <h2 className="text-xl font-semibold text-white mt-8 mb-4 first:mt-0 leading-tight">
-                    {children}
-                  </h2>
+                  <h2 className="text-xl font-semibold text-white mt-8 mb-4 first:mt-0 leading-tight">{children}</h2>
                 ),
                 h3: ({ children }) => (
-                  <h3 className="text-lg font-semibold text-white mt-6 mb-3 first:mt-0 leading-tight">
-                    {children}
-                  </h3>
+                  <h3 className="text-lg font-semibold text-white mt-6 mb-3 first:mt-0 leading-tight">{children}</h3>
                 ),
                 h4: ({ children }) => (
-                  <h4 className="text-base font-semibold text-white mt-4 mb-2 first:mt-0 leading-tight">
-                    {children}
-                  </h4>
+                  <h4 className="text-base font-semibold text-white mt-4 mb-2 first:mt-0 leading-tight">{children}</h4>
+                ),
+                h5: ({ children }) => (
+                  <h5 className="text-base font-semibold text-white mt-4 mb-2 first:mt-0 leading-tight">{children}</h5>
+                ),
+                h6: ({ children }) => (
+                  <h6 className="text-base font-semibold text-white mt-4 mb-2 first:mt-0 leading-tight">{children}</h6>
                 ),
                 p: ({ children }) => (
                   <p className="mb-4 text-gray-300 leading-relaxed last:mb-0 text-sm">
@@ -135,7 +141,7 @@ export default function MessageContent({
                 )
               }}
             >
-              {content}
+              {cleanMarkdown(content)}
             </Markdown>
           ) : (
             <div className="flex items-center gap-3 text-gray-400">

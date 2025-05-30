@@ -11,6 +11,7 @@ import ResearchSteps from './ResearchSteps';
 import Sources from './Sources';
 import MessageContent from './Content';
 import InputSection from './InputSection';
+import { memo } from 'react';
 
 interface Source {
   title: string;
@@ -48,96 +49,186 @@ interface StreamEvent {
   data: any;
 }
 
+
 const API_BASE = 'http://localhost:8000';
 
-// Welcome Component
-function WelcomeScreen({ onExampleClick }: { onExampleClick: (text: string) => void }) {
-  const examples = [
+
+
+interface ExampleItem {
+  title: string;
+  query: string;
+  icon: string;
+  description?: string;
+}
+
+interface WelcomeScreenProps {
+  onExampleClick: (text: string) => void;
+}
+
+const WelcomeScreen = memo(({ onExampleClick }: WelcomeScreenProps) => {
+  const examples: ExampleItem[] = [
     {
       title: "AI & Technology",
       query: "Compare the latest AI models and their capabilities",
-      icon: "🤖"
+      icon: "🤖",
+      description: "Explore cutting-edge AI developments"
     },
     {
       title: "Science & Research",
       query: "Latest breakthroughs in quantum computing",
-      icon: "🔬"
+      icon: "🔬",
+      description: "Discover recent scientific advances"
     },
     {
       title: "Business & Markets",
       query: "Analyze the current state of renewable energy markets",
-      icon: "📊"
+      icon: "📊",
+      description: "Get insights on market trends"
     },
     {
       title: "Health & Medicine",
       query: "Recent developments in cancer treatment research",
-      icon: "🏥"
+      icon: "🏥",
+      description: "Learn about medical breakthroughs"
     }
   ];
 
+  const containerVariants = {
+    hidden: { opacity: 0 },
+    visible: {
+      opacity: 1,
+      transition: {
+        duration: 0.6,
+        staggerChildren: 0.1
+      }
+    }
+  };
+
+  const itemVariants = {
+    hidden: { opacity: 0, y: 20 },
+    visible: { 
+      opacity: 1, 
+      y: 0,
+      transition: { duration: 0.5 }
+    }
+  };
+
   return (
     <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.6 }}
-      className="flex flex-col items-center justify-center min-h-[60vh] text-center px-6"
+      variants={containerVariants}
+      initial="hidden"
+      animate="visible"
+      className="flex flex-col items-center justify-center h-full max-h-[calc(100vh-200px)] overflow-y-auto text-center px-6 py-4"
     >
-      <div className="relative mb-8">
-        <div className="w-20 h-20 bg-gradient-to-br from-blue-500 to-purple-600 rounded-3xl flex items-center justify-center shadow-2xl">
-          <Search className="w-12 h-12 text-white" />
-        </div>
-        <div className="absolute -inset-4 bg-gradient-to-br from-blue-500/20 to-purple-600/20 rounded-3xl blur-xl opacity-75"></div>
-        <motion.div
-          animate={{ rotate: 360 }}
-          transition={{ duration: 20, repeat: Infinity, ease: "linear" }}
-          className="absolute -inset-6 border border-dashed border-blue-500/30 rounded-3xl"
-        ></motion.div>
-      </div>
-
-      <motion.div
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.2, duration: 0.6 }}
+      {/* Hero Section */}
+      <motion.div 
+        variants={itemVariants}
+        className="relative mb-2 mt-8"
       >
-        <h1 className="text-3xl md:text-4xl font-bold text-white mb-4">
+        {/* Main Icon Container */}
+        <div className="relative">
+          <div className="w-14 h-14 bg-gradient-to-br from-blue-500 via-purple-500 to-pink-500 rounded-3xl flex items-center justify-center shadow-2xl shadow-blue-500/25">
+            <Search className="w-6 h-6 text-white drop-shadow-lg" />
+          </div>
+          
+          {/* Glow Effect */}
+          <div className="absolute -inset-4 bg-gradient-to-br from-blue-500/20 via-purple-500/20 to-pink-500/20 rounded-3xl blur-xl opacity-75 animate-pulse"></div>
+          
+          {/* Rotating Border */}
+          <motion.div
+            animate={{ rotate: 360 }}
+            transition={{ duration: 20, repeat: Infinity, ease: "linear" }}
+            className="absolute -inset-6 border-blue-400/30 rounded-3xl"
+          />
+          
+          {/* Floating Sparkles */}
+          <motion.div
+            animate={{ 
+              y: [-10, 10, -10],
+              rotate: [0, 180, 360]
+            }}
+            transition={{ 
+              duration: 4, 
+              repeat: Infinity, 
+              ease: "easeInOut" 
+            }}
+            className="absolute -top-2 -right-2 text-yellow-400"
+          >
+            <Sparkles className="w-5 h-5" />
+          </motion.div>
+        </div>
+      </motion.div>
+
+      {/* Title Section */}
+      <motion.div
+        variants={itemVariants}
+        className="mb-4"
+      >
+        <h1 className="text-3xl md:text-4xl font-bold text-white mb-3 leading-tight">
           Welcome to{' '}
-          <span className="bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
+          <span className="bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
             Touch
           </span>
         </h1>
+        <p className="text-base text-gray-300 max-w-2xl mx-auto leading-relaxed">
+          Discover insights across technology, science, business, and health. 
+          Choose a topic below to get started.
+        </p>
       </motion.div>
 
+      {/* Examples Grid */}
       <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.4, duration: 0.6 }}
-        className="grid grid-cols-1 mt-4 md:grid-cols-2 gap-4 max-w-4xl w-full"
+        variants={itemVariants}
+        className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-4xl w-full mt-6"
       >
-        {examples.map((example, i) => (
+        {examples.map((example, index) => (
           <motion.button
-            key={i}
-            whileHover={{ scale: 1.02, y: -2 }}
-            whileTap={{ scale: 0.98 }}
+            key={`${example.title}-${index}`}
+            variants={itemVariants}
+            whileHover={{ 
+              scale: 1.03, 
+              y: -4,
+              transition: { duration: 0.2 }
+            }}
+            whileTap={{ scale: 0.97 }}
             onClick={() => onExampleClick(example.query)}
-            className="group p-6 bg-gray-800/50 backdrop-blur-xl border border-gray-700/50 rounded-2xl text-left hover:border-gray-600/50 transition-all duration-300"
+            className="group relative p-5 bg-gray-800/60 backdrop-blur-xl border border-gray-700/50 rounded-2xl text-left hover:border-gray-600/70 hover:bg-gray-800/80 transition-all duration-300 overflow-hidden"
+            aria-label={`Search for: ${example.query}`}
           >
-            <div className="flex items-start gap-4">
-              <div className="text-2xl">{example.icon}</div>
-              <div>
-                <h3 className="font-semibold text-white mb-2 group-hover:text-blue-400 transition-colors">
+            {/* Hover Gradient Effect */}
+            <div className="absolute inset-0 bg-gradient-to-br from-blue-500/5 to-purple-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-2xl" />
+            
+            <div className="relative flex items-start gap-4">
+              <div className="text-2xl group-hover:scale-110 transition-transform duration-300">
+                {example.icon}
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="font-semibold text-white mb-2 group-hover:text-blue-400 transition-colors duration-300 text-md">
                   {example.title}
                 </h3>
-                <p className="text-sm text-gray-400 leading-relaxed">
-                  {example.query}
+                <p className="text-sm text-gray-500 leading-relaxed line-clamp-2">
+                  "{example.query}"
                 </p>
               </div>
             </div>
+            
+            {/* Subtle shine effect on hover */}
+            <div className="absolute top-0 -left-full h-full w-1/2 bg-gradient-to-r from-transparent via-white/5 to-transparent skew-x-12 group-hover:left-full transition-all duration-700" />
           </motion.button>
         ))}
       </motion.div>
+
+      {/* Footer Text */}
+      <motion.div
+        variants={itemVariants}
+        className="mt-6 text-gray-400 text-sm"
+      >
+        Click any example above or start typing your own query
+      </motion.div>
     </motion.div>
   );
-}
+});
+
 
 // Current Step Indicator Component
 function CurrentStepIndicator({ step }: { step: string }) {
