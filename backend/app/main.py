@@ -7,6 +7,7 @@ import uuid
 import time
 from datetime import datetime
 from typing import AsyncGenerator
+import asyncio
 
 from app.agents.research_agent import TouchResearchAgent
 from app.models.schemas import QueryRequest, QueryResponse, ErrorResponse
@@ -34,6 +35,19 @@ class StreamingResearchService:
         except Exception as e:
             print(f"❌ Agent init error: {e}")
             self.research_agent = None
+
+    def _format_sse_data(self, event_type: str, data: dict) -> str:
+        """Format data for Server-Sent Events"""
+        try:
+            json_data = json.dumps({'type': event_type, 'data': data}, ensure_ascii=False)
+            formatted = f"data: {json_data}\n\n"
+            print(f"SSE: {event_type} - {str(data)[:100]}...")  # Debug log
+            return formatted
+        except Exception as e:
+            print(f"JSON serialization error: {e}")  # Debug log
+            # Fallback if JSON serialization fails
+            fallback = f"data: {json.dumps({'type': 'error', 'data': {'message': f'Serialization error: {str(e)}'}})}\n\n"
+            return fallback
     
     async def research_query_stream(self, query: str) -> AsyncGenerator[str, None]:
         """Fixed streaming with proper event flow"""
@@ -44,29 +58,26 @@ class StreamingResearchService:
             
         try:
             print(f"🔍 Starting research: {query}")
-            
-            # Step 1: Research steps
-            steps = [
-                "Initializing intelligent research agent with advanced capabilities",
-                "Analyzing your query and formulating comprehensive research strategy", 
-                "Deploying specialized tools and executing multi-phase research plan",
-                "Gathering high-quality information from authoritative sources",
-                "Processing, cross-referencing, and synthesizing collected data",
-                "Compiling insights and preparing comprehensive response"
-            ]
-            
-            for i, step_desc in enumerate(steps, 1):
-                yield self._format_sse_data("research_step", {
-                    "step_number": i,
-                    "description": step_desc,
-                    "timestamp": datetime.now().isoformat(),
-                    "sources_found": 0
-                })
-                await asyncio.sleep(0.8)
+            queue = asyncio.Queue()
+
+            async def on_step(data: dict):
+                await queue.put(self._format_sse_data("research_step", data))
+
+            research_task = asyncio.create_task(
+                self.research_agent.research_query(query, on_step=on_step)
+            )
+
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    yield item
+                    queue.task_done()
+                except asyncio.TimeoutError:
+                    break  
             
             # Step 2: Execute actual research
             print("🤖 Executing research agent...")
-            result = await self.research_agent.research_query(query)
+            result = await self.research_agent.research_query(query, on_step=on_step)
             print(f"✅ Research completed: {len(result.get('answer', ''))} chars")
             
             # Step 3: Send sources (this triggers frontend to show sources)
@@ -117,30 +128,7 @@ class StreamingResearchService:
             traceback.print_exc()
             yield self._format_sse_data("error", {"message": f"Research error: {str(e)}"})
     
-    def _format_sse_data(self, event_type: str, data: dict) -> str:
-        """Safe SSE formatting"""
-        try:
-            json_str = json.dumps({'type': event_type, 'data': data}, ensure_ascii=False)
-            formatted = f"data: {json_str}\n\n"
-            # print(f"📤 SSE: {event_type}")  # Debug log
-            return formatted
-        except Exception as e:
-            print(f"❌ JSON error: {e}")
-            return f"data: {{\"type\": \"error\", \"data\": {{\"message\": \"JSON error\"}}}}\n\n"
 
-    
-    def _format_sse_data(self, event_type: str, data: dict) -> str:
-        """Format data for Server-Sent Events"""
-        try:
-            json_data = json.dumps({'type': event_type, 'data': data}, ensure_ascii=False)
-            formatted = f"data: {json_data}\n\n"
-            print(f"SSE: {event_type} - {str(data)[:100]}...")  # Debug log
-            return formatted
-        except Exception as e:
-            print(f"JSON serialization error: {e}")  # Debug log
-            # Fallback if JSON serialization fails
-            fallback = f"data: {json.dumps({'type': 'error', 'data': {'message': f'Serialization error: {str(e)}'}})}\n\n"
-            return fallback
 
 # Initialize streaming service
 streaming_service = StreamingResearchService()

@@ -2,15 +2,58 @@ from langchain.agents import AgentExecutor, create_openai_tools_agent
 from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 from langchain.schema import HumanMessage, SystemMessage
-from typing import List, Dict, Tuple, Literal
+from typing import List, Dict, Tuple, Literal, Optional, Callable, Awaitable
 import json
 import time
 import re
 from datetime import datetime
 from ..prompts.prompts import research_prompt, simple_query_prompt,get_classification_prompt,get_safety_prompt
+import asyncio
 
 from ..tools.web_search import WebSearchTool, WebScrapeTool
 from config import settings
+
+
+from langchain.callbacks.base import AsyncCallbackHandler
+from datetime import datetime
+
+
+class StepCounter:
+    def __init__(self):
+        self.count = 0
+
+    def next(self) -> int:
+        self.count += 1
+        return self.count
+
+
+class StreamingStepCallback(AsyncCallbackHandler):
+    def __init__(self, on_step: Callable[[dict], Awaitable[None]],counter: StepCounter):
+        self.on_step = on_step
+        self.counter = counter
+
+    async def on_tool_end(self, output, **kwargs):
+        print(kwargs)
+        """Called after each tool finishes executing"""
+        step_number = self.counter.next()
+        tool_name = kwargs.get("name", None)
+        
+        try:
+            # Format as your frontend expects
+            step = {
+                "step_number": step_number,
+                "description": f" use tool : {tool_name}",
+                "search_query": str(output)[:80],
+                "timestamp": datetime.now().isoformat(),
+            }
+
+            if tool_name == "web_search":
+               step["sources_found"] = 5  # Or dynamically count if you prefer
+
+            await self.on_step(step)
+        except Exception as e:
+            print(f"⚠️ Callback error: {e}")
+
 
 class TouchResearchAgent:
     def __init__(self):
@@ -21,6 +64,12 @@ class TouchResearchAgent:
         )
         
         self.classifier_llm = ChatOpenAI(
+            model="gpt-4o-mini",
+            temperature=0.0,  
+            api_key=settings.OPENAI_API_KEY
+        )
+
+        self.safety_llm = ChatOpenAI(
             model="gpt-4o-mini",
             temperature=0.0,  
             api_key=settings.OPENAI_API_KEY
@@ -90,13 +139,16 @@ class TouchResearchAgent:
     async def _classify_query_with_llm(self, query: str) -> Dict[str, any]:
         """Use LLM to classify query as simple or complex"""
         try:
-            prompt = get_classification_prompt().format(query=query)
-            
+            prompt = get_classification_prompt(query)
+            print(f"🤖 LLM classification prompt: {prompt}")
             messages = [HumanMessage(content=prompt)]
+
             response = self.classifier_llm.invoke(messages)
             
             # Parse the JSON response
             response_text = response.content.strip()
+
+            print(f"🤖 LLM classification result: {response_text}")
             
             # Extract JSON from response if it's wrapped in markdown
             if "```json" in response_text:
@@ -109,6 +161,7 @@ class TouchResearchAgent:
                 response_text = response_text[json_start:json_end].strip()
             
             classification_result = json.loads(response_text)
+
             
             # Validate the response
             if "classification" not in classification_result:
@@ -125,23 +178,21 @@ class TouchResearchAgent:
             
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             print(f"⚠️ LLM classification error: {e}")
-            # Fallback to simple heuristic
-            return self._fallback_classification(query)
         except Exception as e:
             print(f"⚠️ Unexpected classification error: {e}")
-            return self._fallback_classification(query)
 
 
 
     async def _sanitize_input(self, query: str) -> Tuple[bool, str]:
         """Use LLM to check if query is safe and appropriate"""
         try:
-            prompt = get_safety_prompt().format(query=query)
+            prompt = get_safety_prompt(query)
             
             messages = [HumanMessage(content=prompt)]
-            response = self.safety_llm.invoke(messages)
+            response = await self.safety_llm.ainvoke(messages)  # Use ainvoke for async
             
             # Parse the JSON response
+
             response_text = response.content.strip()
             
             # Extract JSON from response if it's wrapped in markdown
@@ -170,6 +221,7 @@ class TouchResearchAgent:
             is_safe = safety_result["is_safe"]
             reason = safety_result.get("reason", "Query flagged as potentially unsafe")
             
+
             if is_safe:
                 return True, query
             else:
@@ -177,18 +229,19 @@ class TouchResearchAgent:
                 
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             print(f"⚠️ LLM safety check error: {e}")
-            # Fallback to keyword-based safety check
-            return self._fallback_safety_check(query)
+            # ADD MISSING RETURN - fallback to safe assumption
         except Exception as e:
             print(f"⚠️ Unexpected safety check error: {e}")
-            return self._fallback_safety_check(query)
+            # ADD MISSING RETURN - fallback to safe assumption  
 
-    async def research_query(self, query: str) -> Dict:
+    async def research_query(self, query: str,on_step: Optional[Callable[[dict], Awaitable[None]]] = None) -> Dict:
         """Main research method with LLM-based agent selection"""
         start_time = time.time()
-        
+        step_counter = StepCounter()
+
+ 
         # Safety check
-        is_safe, safety_message = self._sanitize_input(query)
+        is_safe, safety_message = await self._sanitize_input(query)
         if not is_safe:
             return {
                 "answer": safety_message,
@@ -200,6 +253,16 @@ class TouchResearchAgent:
             }
         
         try:
+            
+            if on_step:
+                await on_step({
+                    "step_number": step_counter.next(),
+                    "description": "Checking query..",
+                    "timestamp": datetime.now().isoformat(),
+                    "sources_found": 0
+                })
+
+           
             # Use LLM to classify query
             classification_result = await self._classify_query_with_llm(query)
             query_type = classification_result["classification"]
@@ -210,13 +273,17 @@ class TouchResearchAgent:
             
             # Choose appropriate agent based on classification
             agent_executor = self.simple_agent if query_type == "simple" else self.research_agent
-            
-            # For real-time queries, enhance with temporal context
-            if query_type == "simple":
-                query = self._enhance_realtime_query(query)
-            
+
+            if on_step:
+                await on_step({
+                    "step_number": step_counter.next(),
+                    "description": "Gathering sources and performing research..",
+                    "timestamp": datetime.now().isoformat(),
+                })
+ 
+
             # Execute the agent
-            result = agent_executor.invoke({"input": query})
+            result = await agent_executor.ainvoke({"input": query},{"callbacks":[StreamingStepCallback(on_step,step_counter)]})
             print(f"✅ Agent execution completed")
             
             # Check if agent stopped due to max iterations
@@ -230,6 +297,13 @@ class TouchResearchAgent:
             research_steps = self._convert_steps_to_research_steps(intermediate_steps)
             sources = self._extract_sources_from_steps(intermediate_steps)
             
+            if on_step:
+                await on_step({
+                    "step_number": step_counter.next(),
+                    "description": "generating response...",
+                    "timestamp": datetime.now().isoformat(),
+                })
+
             # Format the answer
             formatted_answer = self._ensure_markdown_formatting(answer, sources)
             
@@ -259,16 +333,6 @@ class TouchResearchAgent:
                 "confidence_score": 0.0,
                 "query_classification": "error"
             }
-
-    def _enhance_realtime_query(self, query: str) -> str:
-        """Enhance real-time queries with current date context"""
-        current_date = datetime.now().strftime("%Y-%m-%d")
-        
-        # Add date context for time-sensitive queries
-        if any(word in query.lower() for word in ["today", "latest", "current", "now"]):
-            query = f"{query} {current_date}"
-        
-        return query
 
     # ... (rest of the methods remain the same as in your original code)
     def _recover_from_max_iterations(self, result: Dict, query_type: str) -> str:
@@ -334,7 +398,7 @@ class TouchResearchAgent:
                     
                     step = {
                         "step_number": i + 1,
-                        "description": f"Used {tool_name}: {tool_input}{'...' if len(tool_input) >= 100 else ''}",
+                        "description": f"{tool_name}: {tool_input}{'...' if len(tool_input) >= 100 else ''}",
                         "search_query": tool_input if tool_name == "web_search" else None,
                         "sources_found": sources_found,
                         "timestamp": datetime.now().isoformat()
