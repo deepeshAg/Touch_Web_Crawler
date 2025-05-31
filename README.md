@@ -23,8 +23,9 @@ A modern, web-enabled AI research assistant with real-time web search, citation,
 
 ### 1. Clone the repository
 ```bash
-git clone https://github.com/yourusername/touch-ai-research-assistant.git
-cd touch-ai-research-assistant
+git clone https://github.com/yourusername/Touch_Web_Crawler.git
+cd Touch_Web_Crawler
+
 ```
 
 ### 2. Setup the Backend
