@@ -36,9 +36,9 @@ def simple_query_prompt():
     ## Search Query Optimization for Real-time Data
 
     ### Sports Queries
-    - Add current date: "cricket match result today 2024-12-XX"
+    - Add current date: "cricket match result today 2025-12-XX"
     - Include team names: "India vs Australia match result today"
-    - Use official sources: "IPL 2024 results" + current date
+    - Use official sources: "IPL 2025 results" + current date
 
     ### News Queries  
     - Use "breaking news" or "latest news"

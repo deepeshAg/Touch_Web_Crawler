@@ -63,23 +63,20 @@ class StreamingResearchService:
             async def on_step(data: dict):
                 await queue.put(self._format_sse_data("research_step", data))
 
-            research_task = asyncio.create_task(
+            task = asyncio.create_task(
                 self.research_agent.research_query(query, on_step=on_step)
             )
 
+
             while True:
                 try:
-                    item = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    item = await asyncio.wait_for(queue.get(), timeout=60.0)
                     yield item
                     queue.task_done()
                 except asyncio.TimeoutError:
                     break  
-            
-            # Step 2: Execute actual research
-            print("🤖 Executing research agent...")
-            result = await self.research_agent.research_query(query, on_step=on_step)
-            print(f"✅ Research completed: {len(result.get('answer', ''))} chars")
-            
+        
+            result = await task
             # Step 3: Send sources (this triggers frontend to show sources)
             sources = result.get("sources", [])
             if sources:
@@ -110,7 +107,6 @@ class StreamingResearchService:
                 for line in lines:
                     if line.strip():  # ignore empty lines if needed
                         yield self._format_sse_data("content_chunk", {"chunk": line + "\n"})
-                        await asyncio.sleep(0.1)
             else:
                 print("⚠️ No answer content")
                 yield self._format_sse_data("content_chunk", {"chunk": "No content was generated."})
