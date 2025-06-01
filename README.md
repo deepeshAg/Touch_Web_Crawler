@@ -7,15 +7,16 @@ A modern, web-enabled AI research assistant with real-time web search, citation,
 ---
 
 ## Features
+
+<p align="">
+  <img src="https://github.com/user-attachments/assets/a936dfb8-028c-4e5e-a05d-b2f74e219836" alt="touch" />
+</p>
+
 - **Conversational UI**: Chat with an AI that researches your queries in real time
 - **Web Search & Scraping**: Uses Tavily/SerpAPI for up-to-date information
 - **Cited Answers**: Every answer includes sources and research steps
 - **Markdown Rendering**: Beautiful, readable answers with code, tables, and more
 - **Modern UI**: Responsive, dark-mode friendly, and mobile-ready
-
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/a936dfb8-028c-4e5e-a05d-b2f74e219836" alt="touch" />
-</p>
 
 ---
 
