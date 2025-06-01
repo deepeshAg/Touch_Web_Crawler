@@ -1,7 +1,9 @@
-# Touch AI Research Assistant
+![Screenshot 2025-05-31 at 12 01 58 AM](https://github.com/user-attachments/assets/b24d6090-2fe7-4f7b-aa42-6ab9a08ce1d2)# Touch AI Research Assistant
 
 A modern, web-enabled AI research assistant with real-time web search, citation, and synthesis capabilities. Built with a Next.js + Tailwind frontend and a FastAPI + LangChain backend.
+![touch](https://github.com/user-attachments/assets/a936dfb8-028c-4e5e-a05d-b2f74e219836)
 
+ 
 ---
 
 ## Features
